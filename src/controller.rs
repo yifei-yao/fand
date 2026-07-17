@@ -6,9 +6,8 @@ pub struct Controller {
     duty: f32,
     start: Instant,
     last_call_seconds: Option<f32>,
-    last_accepted_temperature: Option<f32>,
-    rejected_in_a_row: u32,
     samples: SampleWindow,
+    filter: TmpFilter,
 }
 impl Controller {
     pub fn new(setpoint: f32, floor: f32, ceiling: f32) -> Controller {
@@ -19,9 +18,8 @@ impl Controller {
             duty: floor,
             start: Instant::now(),
             last_call_seconds: None,
-            last_accepted_temperature: None,
-            rejected_in_a_row: 0,
             samples: SampleWindow::new(),
+            filter: TmpFilter::new(),
         }
     }
     pub fn step(&mut self, temperature: f32) -> f32 {
@@ -34,21 +32,9 @@ impl Controller {
             None => 0.0,
         };
         self.last_call_seconds = Some(now_seconds);
-        if !temperature.is_finite() || elapsed <= 0.0 {
+        let Some(temperature) = self.filter.filter(temperature) else {
             return self.duty;
-        }
-        if let Some(last_accepted) = self.last_accepted_temperature {
-            const MAX_PLAUSIBLE_DROP_PER_SECOND: f32 = 4.0;
-            const REJECTIONS_BEFORE_ACCEPTING: u32 = 2;
-            let impossible_drop =
-                last_accepted - temperature > MAX_PLAUSIBLE_DROP_PER_SECOND * elapsed;
-            if impossible_drop && self.rejected_in_a_row < REJECTIONS_BEFORE_ACCEPTING {
-                self.rejected_in_a_row += 1;
-                return self.duty;
-            }
-        }
-        self.rejected_in_a_row = 0;
-        self.last_accepted_temperature = Some(temperature);
+        };
         self.samples.push(now_seconds, temperature);
         let Some(temperature_rate) = self.samples.slope() else {
             return self.duty;
@@ -67,6 +53,38 @@ impl Controller {
     }
     pub fn floor(&self) -> f32 {
         self.floor
+    }
+}
+struct TmpFilter {
+    last_tmp: Option<f32>,
+    ignored: usize,
+}
+impl TmpFilter {
+    fn new() -> Self {
+        Self {
+            last_tmp: None,
+            ignored: 0,
+        }
+    }
+    fn filter(&mut self, raw_tmp: f32) -> Option<f32> {
+        if !raw_tmp.is_finite() {
+            return self.last_tmp;
+        }
+        const MAX_IGNORED: usize = 2;
+        let last_tmp = if let Some(tmp) = self.last_tmp {
+            tmp
+        } else {
+            self.last_tmp = Some(raw_tmp);
+            return Some(raw_tmp);
+        };
+        const DROP_LIMIT: f32 = 4.0;
+        if raw_tmp + DROP_LIMIT < last_tmp && self.ignored < MAX_IGNORED {
+            self.ignored += 1;
+            return Some(last_tmp);
+        }
+        self.ignored = 0;
+        self.last_tmp = Some(raw_tmp);
+        return Some(raw_tmp);
     }
 }
 struct SampleWindow {
