@@ -43,8 +43,13 @@ pub fn interactive(config_path: &str) -> Result<(), String> {
     for t in &hwmon_temps {
         sensors.push(FoundSensor {
             reference: format!("hwmon:{}/{}", t.chip, t.file),
-            description: format!("{:<30} {:>6.1} C  ({} {})", 
-                format!("{}/{}", t.chip, t.label), t.celsius, t.chip, t.file),
+            description: format!(
+                "{:<30} {:>6.1} C  ({} {})",
+                format!("{}/{}", t.chip, t.label),
+                t.celsius,
+                t.chip,
+                t.file
+            ),
         });
     }
     for p in &hwmon_pwms {
@@ -52,8 +57,11 @@ pub fn interactive(config_path: &str) -> Result<(), String> {
         let note = if p.has_enable { "" } else { " [no pwm_enable]" };
         fans.push(FoundFan {
             reference: format!("hwmon:{}/{}", p.chip, p.file),
-            description: format!("{:<30} now {:>3.0}%{note}", 
-                format!("{}/{}", p.chip, p.file), percent),
+            description: format!(
+                "{:<30} now {:>3.0}%{note}",
+                format!("{}/{}", p.chip, p.file),
+                percent
+            ),
         });
     }
 
@@ -108,7 +116,10 @@ pub fn interactive(config_path: &str) -> Result<(), String> {
             .reference
             .clone();
 
-        let existing: Vec<String> = channels.iter().map(|c: &ChannelConfig| c.name.clone()).collect();
+        let existing: Vec<String> = channels
+            .iter()
+            .map(|c: &ChannelConfig| c.name.clone())
+            .collect();
         let mut follow: Vec<String> = Vec::new();
         let mut sensor_configs = Vec::new();
         let follows_others = !existing.is_empty()
@@ -128,20 +139,21 @@ pub fn interactive(config_path: &str) -> Result<(), String> {
                 follow.push(name);
             }
         } else {
-        let picks = prompt("sensor number(s), comma-separated (case fans can watch several): ")?;
-        for pick in picks.split(',') {
-            let sensor_index: usize = pick
-                .trim()
-                .parse()
-                .map_err(|_| format!("'{pick}' is not a number"))?;
-            let source = sensors
-                .get(sensor_index)
-                .ok_or("sensor number out of range")?
-                .reference
-                .clone();
-            let setpoint = prompt_f32(&format!("  setpoint C for {source}"), 78.0)?;
-            sensor_configs.push(SensorConfig { source, setpoint });
-        }
+            let picks =
+                prompt("sensor number(s), comma-separated (case fans can watch several): ")?;
+            for pick in picks.split(',') {
+                let sensor_index: usize = pick
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("'{pick}' is not a number"))?;
+                let source = sensors
+                    .get(sensor_index)
+                    .ok_or("sensor number out of range")?
+                    .reference
+                    .clone();
+                let setpoint = prompt_f32(&format!("  setpoint C for {source}"), 78.0)?;
+                sensor_configs.push(SensorConfig { source, setpoint });
+            }
         }
 
         let floor = prompt_f32("floor duty % (lowest the fan spins reliably)", 25.0)?;
@@ -162,7 +174,7 @@ pub fn interactive(config_path: &str) -> Result<(), String> {
     }
 
     let config = Config {
-        interval_seconds: 2.0,
+        interval_seconds: 1.0,
         channels,
     };
     let toml_text = toml::to_string_pretty(&config).map_err(|e| e.to_string())?;

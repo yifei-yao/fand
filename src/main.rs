@@ -7,9 +7,9 @@ mod setup;
 use controller::Controller;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 // Sensor/fan references:
 //   "hwmon:chip/temp1_input"  "hwmon:chip/pwm2"  "nvml:0"
@@ -41,7 +41,7 @@ pub struct Config {
 }
 
 fn default_interval() -> f32 {
-    2.0
+    1.0
 }
 
 enum Sensor {
@@ -176,30 +176,50 @@ fn run(config_path: &str) -> Result<(), String> {
     }
 
     eprintln!("fand: {} channel(s)", channels.len());
+    let started = Instant::now();
+
     while running.load(Ordering::SeqCst) {
         let mut duties: HashMap<String, f32> = HashMap::new();
+        let mut temperatures: HashMap<String, Vec<String>> = HashMap::new();
+
         // Pass 1: sensor-driven channels.
         for channel in channels.iter_mut() {
             if !channel.follow.is_empty() {
                 continue;
             }
+
             // Max error across sensors; a failed sensor forces max fan.
             let mut error = f32::NEG_INFINITY;
             let mut failed = false;
+            let mut readings = Vec::new();
+
             for (sensor, setpoint) in &channel.sensors {
                 let temp = match sensor {
                     Sensor::Hwmon(path) => hwmon::read_temp(path),
                     #[cfg(feature = "gpu")]
                     Sensor::Nvml(index) => gpus[index].temp(),
                 };
+
                 match temp {
-                    Ok(t) => error = error.max(t - setpoint),
+                    Ok(t) if t.is_finite() => {
+                        error = error.max(t - setpoint);
+                        readings.push(format!("{t:.1} C (target {setpoint:.1} C)"));
+                    }
+                    Ok(t) => {
+                        readings.push(format!("invalid temperature ({t})"));
+                        eprintln!("{}: invalid sensor value: {t}", channel.name);
+                        failed = true;
+                    }
                     Err(e) => {
+                        readings.push("sensor error".to_string());
                         eprintln!("{}: sensor read failed: {e}", channel.name);
                         failed = true;
                     }
                 }
             }
+
+            temperatures.insert(channel.name.clone(), readings);
+
             let duty = if failed || !error.is_finite() {
                 channel.controller.ceiling()
             } else {
@@ -243,6 +263,35 @@ fn run(config_path: &str) -> Result<(), String> {
                 eprintln!("{}: fan write failed: {e}", channel.name);
             }
         }
+
+        // Print one status line per channel on every control iteration.
+        let uptime = started.elapsed().as_secs_f32();
+        for channel in &channels {
+            let duty = duties
+                .get(&channel.name)
+                .copied()
+                .unwrap_or_else(|| channel.controller.ceiling());
+
+            if channel.follow.is_empty() {
+                let sensor_text = temperatures
+                    .get(&channel.name)
+                    .map(|values| values.join(", "))
+                    .unwrap_or_else(|| "no sensor reading".to_string());
+
+                eprintln!(
+                    "[{uptime:>6.1}s] {} temp: {} duty: {:.1}%",
+                    channel.name, sensor_text, duty,
+                );
+            } else {
+                eprintln!(
+                    "[{uptime:>6.1}s] {} follows: {} duty: {:>.1}%",
+                    channel.name,
+                    channel.follow.join(", "),
+                    duty,
+                );
+            }
+        }
+
         std::thread::sleep(Duration::from_secs_f32(config.interval_seconds));
     }
 
