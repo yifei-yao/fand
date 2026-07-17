@@ -27,9 +27,9 @@ impl Controller {
      *
      * For a duty range of 0.0..1.0, they scale automatically.
      */
-    const KP: f32 = 0.04;
+    const KP: f32 = 0.15;
     const KI: f32 = 0.002;
-    const KD: f32 = 0.20;
+    const KD: f32 = 0.02;
 
     pub fn new(setpoint: f32, floor: f32, ceiling: f32) -> Controller {
         assert!(setpoint.is_finite(), "setpoint must be finite");
@@ -130,6 +130,21 @@ impl Controller {
 
         self.duty =
             (self.floor + proportional + integral + derivative).clamp(self.floor, self.ceiling);
+        eprintln!(
+            "[pid] temp={temperature:.2} \
+     dt={elapsed:.3} \
+     error={error:.2} \
+     rate={error_rate:.3} \
+     P={proportional:.2} \
+     I={integral:.2} \
+     D={derivative:.2} \
+     integral_state={:.2} \
+     proposed={proposed_duty:.2} \
+     duty={:.2} \
+     block_high={pushes_above_ceiling} \
+     block_low={pushes_below_floor}",
+            self.integral_error, self.duty,
+        );
 
         self.duty
     }
@@ -194,13 +209,6 @@ struct SampleWindow {
 impl SampleWindow {
     const CAPACITY: usize = 32;
 
-    /*
-     * The original ten-second window made derivative action considerably
-     * delayed. Four seconds still filters sensor noise while responding more
-     * quickly to a changing temperature.
-     */
-    const WINDOW_SECONDS: f32 = 4.0;
-
     fn new() -> SampleWindow {
         SampleWindow {
             seconds: [0.0; SampleWindow::CAPACITY],
@@ -213,51 +221,64 @@ impl SampleWindow {
     fn push(&mut self, seconds: f32, temperature: f32) {
         self.seconds[self.next] = seconds;
         self.temperatures[self.next] = temperature;
-
         self.next = (self.next + 1) % SampleWindow::CAPACITY;
-
         self.count = (self.count + 1).min(SampleWindow::CAPACITY);
     }
 
     fn slope(&self) -> Option<f32> {
+        const WINDOW_SECONDS: f32 = 4.0;
+        const WEIGHT_TIME_CONSTANT_SECONDS: f32 = 2.0;
+
         let newest_index = (self.next + SampleWindow::CAPACITY - 1) % SampleWindow::CAPACITY;
 
         let newest = self.seconds[newest_index];
 
-        let in_window = |index: usize| newest - self.seconds[index] <= SampleWindow::WINDOW_SECONDS;
-
-        let mut count = 0.0f32;
-        let mut seconds_mean = 0.0f32;
-        let mut temperature_mean = 0.0f32;
+        let mut count = 0usize;
+        let mut weight_sum = 0.0f32;
+        let mut weighted_seconds = 0.0f32;
+        let mut weighted_temperature = 0.0f32;
 
         for index in 0..self.count {
-            if in_window(index) {
-                count += 1.0;
-                seconds_mean += self.seconds[index];
-                temperature_mean += self.temperatures[index];
+            let age = newest - self.seconds[index];
+
+            if age > WINDOW_SECONDS {
+                continue;
             }
+
+            let weight = (-age / WEIGHT_TIME_CONSTANT_SECONDS).exp();
+            let relative_seconds = -age;
+
+            count += 1;
+            weight_sum += weight;
+            weighted_seconds += weight * relative_seconds;
+            weighted_temperature += weight * self.temperatures[index];
         }
 
-        if count < 3.0 {
+        if count < 3 || weight_sum <= f32::EPSILON {
             return None;
         }
 
-        seconds_mean /= count;
-        temperature_mean /= count;
+        let seconds_mean = weighted_seconds / weight_sum;
+        let temperature_mean = weighted_temperature / weight_sum;
 
         let mut covariance = 0.0f32;
         let mut variance = 0.0f32;
 
         for index in 0..self.count {
-            if in_window(index) {
-                let time_offset = self.seconds[index] - seconds_mean;
+            let age = newest - self.seconds[index];
 
-                let temperature_offset = self.temperatures[index] - temperature_mean;
-
-                covariance += time_offset * temperature_offset;
-
-                variance += time_offset * time_offset;
+            if age > WINDOW_SECONDS {
+                continue;
             }
+
+            let weight = (-age / WEIGHT_TIME_CONSTANT_SECONDS).exp();
+            let relative_seconds = -age;
+
+            let time_offset = relative_seconds - seconds_mean;
+            let temperature_offset = self.temperatures[index] - temperature_mean;
+
+            covariance += weight * time_offset * temperature_offset;
+            variance += weight * time_offset * time_offset;
         }
 
         if variance <= f32::EPSILON {
