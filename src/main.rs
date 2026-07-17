@@ -311,8 +311,10 @@ fn run(config_path: &str) -> Result<(), String> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let result = match args.get(1).map(String::as_str) {
-        Some("setup") => setup::interactive(args.get(2).map(String::as_str).unwrap_or("fand.toml")),
-        Some("run") => run(args.get(2).map(String::as_str).unwrap_or("fand.toml")),
+        Some("setup") => {
+            setup::interactive(args.get(2).map(String::as_str).unwrap_or("config.toml"))
+        }
+        Some("run") => run(args.get(2).map(String::as_str).unwrap_or("config.toml")),
         _ => {
             eprintln!(
                 "usage: fand setup [config.toml]   scan hardware, build config interactively"
