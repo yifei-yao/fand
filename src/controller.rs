@@ -12,7 +12,7 @@ pub struct Controller {
     last_call_seconds: Option<f32>,
 
     samples: SampleWindow,
-    drop_filter: DropFilter,
+    drop_filter: TempFilter,
 }
 
 impl Controller {
@@ -27,8 +27,8 @@ impl Controller {
      *
      * For a duty range of 0.0..1.0, they scale automatically.
      */
-    const KP: f32 = 0.1;
-    const KI: f32 = 0.002;
+    const KP: f32 = 0.04;
+    const KI: f32 = 0.005;
     const KD: f32 = 0.02;
 
     /*
@@ -74,7 +74,7 @@ impl Controller {
             last_call_seconds: None,
 
             samples: SampleWindow::new(),
-            drop_filter: DropFilter::new(),
+            drop_filter: TempFilter::new(),
         }
     }
 
@@ -186,16 +186,16 @@ impl Controller {
     }
 }
 
-struct DropFilter {
+struct TempFilter {
     last_tmp: Option<f32>,
-    suspicious_drop_since: Option<f32>,
+    suspicious_since: Option<f32>,
 }
 
-impl DropFilter {
+impl TempFilter {
     fn new() -> Self {
         Self {
             last_tmp: None,
-            suspicious_drop_since: None,
+            suspicious_since: None,
         }
     }
 
@@ -203,26 +203,26 @@ impl DropFilter {
         if !raw_tmp.is_finite() {
             return self.last_tmp;
         }
-        const DROP_LIMIT_CELSIUS: f32 = 4.0;
-        const DROP_HOLD_SECONDS: f32 = 1.0;
+        const JUMP_LIMIT_CELSIUS: f32 = 3.0;
+        const JUMP_HOLD_SECONDS: f32 = 1.0;
         let Some(last_tmp) = self.last_tmp else {
             self.last_tmp = Some(raw_tmp);
             return Some(raw_tmp);
         };
-        let suspicious_drop = raw_tmp + DROP_LIMIT_CELSIUS < last_tmp;
-        if !suspicious_drop {
-            self.suspicious_drop_since = None;
+        let suspicious_jump = (raw_tmp - last_tmp).abs() >= JUMP_LIMIT_CELSIUS;
+        if !suspicious_jump {
+            self.suspicious_since = None;
             self.last_tmp = Some(raw_tmp);
             return Some(raw_tmp);
         }
-        match self.suspicious_drop_since {
+        match self.suspicious_since {
             None => {
-                self.suspicious_drop_since = Some(now_seconds);
+                self.suspicious_since = Some(now_seconds);
                 Some(last_tmp)
             }
-            Some(since) if now_seconds - since < DROP_HOLD_SECONDS => Some(last_tmp),
+            Some(since) if now_seconds - since < JUMP_HOLD_SECONDS => Some(last_tmp),
             Some(_) => {
-                self.suspicious_drop_since = None;
+                self.suspicious_since = None;
                 self.last_tmp = Some(raw_tmp);
                 Some(raw_tmp)
             }
