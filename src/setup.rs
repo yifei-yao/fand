@@ -171,7 +171,7 @@ pub fn interactive() -> Result<(), String> {
     }
 
     let config = Config {
-        interval_seconds: 1.0,
+        interval_seconds: 0.1,
         channels,
     };
 
