@@ -38,7 +38,7 @@ pub struct Config {
 }
 
 fn default_interval() -> f32 {
-    1.0
+    0.1
 }
 
 pub fn load_config(path: &str) -> Result<Config, String> {
