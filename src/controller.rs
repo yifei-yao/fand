@@ -12,7 +12,7 @@ pub struct Controller {
     last_call_seconds: Option<f32>,
 
     samples: SampleWindow,
-    filter: TmpFilter,
+    drop_filter: DropFilter,
 }
 
 impl Controller {
@@ -74,7 +74,7 @@ impl Controller {
             last_call_seconds: None,
 
             samples: SampleWindow::new(),
-            filter: TmpFilter::new(),
+            drop_filter: DropFilter::new(),
         }
     }
 
@@ -91,7 +91,7 @@ impl Controller {
 
         self.last_call_seconds = Some(now_seconds);
 
-        let Some(temperature) = self.filter.filter(temperature, elapsed) else {
+        let Some(temperature) = self.drop_filter.filter(temperature) else {
             return self.duty;
         };
 
@@ -186,60 +186,46 @@ impl Controller {
     }
 }
 
-struct TmpFilter {
+struct DropFilter {
     last_tmp: Option<f32>,
-    smoothed_tmp: Option<f32>,
     ignored: usize,
 }
 
-impl TmpFilter {
+impl DropFilter {
     fn new() -> Self {
         Self {
             last_tmp: None,
-            smoothed_tmp: None,
             ignored: 0,
         }
     }
 
-    fn filter(&mut self, raw_tmp: f32, elapsed: f32) -> Option<f32> {
+    fn filter(&mut self, raw_tmp: f32) -> Option<f32> {
         if !raw_tmp.is_finite() {
-            return self.smoothed_tmp;
+            return self.last_tmp;
         }
 
         const MAX_IGNORED: usize = 2;
-        const DROP_LIMIT: f32 = 4.0;
-        const SMOOTHING_TIME_CONSTANT_SECONDS: f32 = 2.5;
+        const DROP_LIMIT_CELSIUS: f32 = 4.0;
 
-        let accepted_tmp = match self.last_tmp {
+        match self.last_tmp {
             None => {
                 self.last_tmp = Some(raw_tmp);
-                raw_tmp
+                Some(raw_tmp)
             }
 
-            Some(last_tmp) if raw_tmp + DROP_LIMIT < last_tmp && self.ignored < MAX_IGNORED => {
+            Some(last_tmp)
+                if raw_tmp + DROP_LIMIT_CELSIUS < last_tmp && self.ignored < MAX_IGNORED =>
+            {
                 self.ignored += 1;
-                last_tmp
+                Some(last_tmp)
             }
 
             Some(_) => {
                 self.ignored = 0;
                 self.last_tmp = Some(raw_tmp);
-                raw_tmp
+                Some(raw_tmp)
             }
-        };
-
-        let smoothed_tmp = match self.smoothed_tmp {
-            None => accepted_tmp,
-            Some(previous) => {
-                let alpha = 1.0 - (-elapsed / SMOOTHING_TIME_CONSTANT_SECONDS).exp();
-
-                previous + alpha * (accepted_tmp - previous)
-            }
-        };
-
-        self.smoothed_tmp = Some(smoothed_tmp);
-
-        Some(smoothed_tmp)
+        }
     }
 }
 
