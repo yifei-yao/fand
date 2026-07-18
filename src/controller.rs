@@ -27,7 +27,7 @@ impl Controller {
      *
      * For a duty range of 0.0..1.0, they scale automatically.
      */
-    const KP: f32 = 0.15;
+    const KP: f32 = 0.1;
     const KI: f32 = 0.002;
     const KD: f32 = 0.02;
 
