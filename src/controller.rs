@@ -21,9 +21,9 @@ impl Controller {
      *
      * For a duty range of 0..100:
      *
-     *   KP = 0.15  -> 15 duty points per °C
+     *   KP = 0.04 -> 4 duty points per °C
      *   KI = 0.002 -> 0.2 duty points per °C-second
-     *   KD = 0.02  -> 2 duty points per °C/second
+     *   KD = 0.20 -> 20 duty points per °C/second
      *
      * For a duty range of 0.0..1.0, they scale automatically.
      */
@@ -66,7 +66,7 @@ impl Controller {
 
         self.last_call_seconds = Some(now_seconds);
 
-        let Some(temperature) = self.filter.filter(temperature, elapsed) else {
+        let Some(temperature) = self.filter.filter(temperature) else {
             return self.duty;
         };
 
@@ -130,7 +130,6 @@ impl Controller {
 
         self.duty =
             (self.floor + proportional + integral + derivative).clamp(self.floor, self.ceiling);
-
         eprintln!(
             "[pid] temp={temperature:.2} \
      dt={elapsed:.3} \
@@ -161,7 +160,6 @@ impl Controller {
 
 struct TmpFilter {
     last_tmp: Option<f32>,
-    smoothed_tmp: Option<f32>,
     ignored: usize,
 }
 
@@ -169,50 +167,35 @@ impl TmpFilter {
     fn new() -> Self {
         Self {
             last_tmp: None,
-            smoothed_tmp: None,
             ignored: 0,
         }
     }
 
-    fn filter(&mut self, raw_tmp: f32, elapsed: f32) -> Option<f32> {
+    fn filter(&mut self, raw_tmp: f32) -> Option<f32> {
         if !raw_tmp.is_finite() {
-            return self.smoothed_tmp;
+            return self.last_tmp;
         }
 
         const MAX_IGNORED: usize = 2;
+
+        let last_tmp = if let Some(tmp) = self.last_tmp {
+            tmp
+        } else {
+            self.last_tmp = Some(raw_tmp);
+            return Some(raw_tmp);
+        };
+
         const DROP_LIMIT: f32 = 4.0;
-        const SMOOTHING_TIME_CONSTANT_SECONDS: f32 = 2.5;
 
-        let accepted_tmp = match self.last_tmp {
-            None => {
-                self.last_tmp = Some(raw_tmp);
-                raw_tmp
-            }
+        if raw_tmp + DROP_LIMIT < last_tmp && self.ignored < MAX_IGNORED {
+            self.ignored += 1;
+            return Some(last_tmp);
+        }
 
-            Some(last_tmp) if raw_tmp + DROP_LIMIT < last_tmp && self.ignored < MAX_IGNORED => {
-                self.ignored += 1;
-                last_tmp
-            }
+        self.ignored = 0;
+        self.last_tmp = Some(raw_tmp);
 
-            Some(_) => {
-                self.ignored = 0;
-                self.last_tmp = Some(raw_tmp);
-                raw_tmp
-            }
-        };
-
-        let smoothed_tmp = match self.smoothed_tmp {
-            None => accepted_tmp,
-            Some(previous) => {
-                let alpha = 1.0 - (-elapsed / SMOOTHING_TIME_CONSTANT_SECONDS).exp();
-
-                previous + alpha * (accepted_tmp - previous)
-            }
-        };
-
-        self.smoothed_tmp = Some(smoothed_tmp);
-
-        Some(smoothed_tmp)
+        Some(raw_tmp)
     }
 }
 
