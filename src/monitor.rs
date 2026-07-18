@@ -33,27 +33,26 @@ fn build(config: &Config, hardware: &mut Hardware) -> Result<Vec<MonitorChannel>
 fn render_channel(channel: &MonitorChannel, hardware: &Hardware) -> String {
     let mut text = channel.name.clone();
 
-    if !channel.sensors.is_empty() {
-        text.push_str(" ");
-        for (index, (sensor, setpoint)) in channel.sensors.iter().enumerate() {
-            if index != 0 {
-                text.push(',');
-            }
+    for (index, (sensor, setpoint)) in channel.sensors.iter().enumerate() {
+        if index == 0 {
+            text.push(' ');
+        } else {
+            text.push(',');
+        }
 
-            match hardware.read_temperature(sensor) {
-                Ok(temperature) if temperature.is_finite() => {
-                    text.push_str(&format!("{temperature:.1}/{setpoint:.1}C"));
-                }
-                Ok(_) => text.push_str("invalid"),
-                Err(_) => text.push_str("ERR"),
+        match hardware.read_temperature(sensor) {
+            Ok(temperature) if temperature.is_finite() => {
+                text.push_str(&format!("{temperature:.1}/{setpoint:.1}C"));
             }
+            Ok(_) => text.push_str("invalid"),
+            Err(_) => text.push_str("ERR"),
         }
     }
 
     match hardware.read_fan_duty(&channel.fan) {
         Ok(duty) if duty.is_finite() => text.push_str(&format!(" {duty:.1}%")),
-        Ok(_) => text.push_str(" fan:invalid"),
-        Err(_) => text.push_str(" fan:ERR"),
+        Ok(_) => text.push_str(" invalid"),
+        Err(_) => text.push_str(" ERR"),
     }
 
     text
@@ -81,7 +80,6 @@ pub fn run(config_path: &str) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join(" | ");
 
-        // One live line, continuously replaced in-place.
         write!(stderr, "\r\x1b[2K{line}").map_err(|e| e.to_string())?;
         stderr.flush().map_err(|e| e.to_string())?;
 

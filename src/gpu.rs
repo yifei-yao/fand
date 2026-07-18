@@ -2,8 +2,8 @@
 // The project always compiles this module; systems without NVIDIA simply fail
 // NVML discovery cleanly at runtime when libnvidia-ml.so.1 is unavailable.
 use nvml_wrapper_sys::bindings::{
-    nvmlDevice_t, nvmlReturn_enum_NVML_SUCCESS as OK,
-    nvmlTemperatureSensors_enum_NVML_TEMPERATURE_GPU as TEMP_GPU, NvmlLib,
+    NvmlLib, nvmlDevice_t, nvmlReturn_enum_NVML_SUCCESS as OK, nvmlTemperature_t,
+    nvmlTemperatureSensors_enum_NVML_TEMPERATURE_GPU as TEMP_GPU,
 };
 
 pub struct Gpu {
@@ -41,14 +41,15 @@ impl Gpu {
         }
 
         let mut fan_count: u32 = 0;
-        if let Err(error) = unsafe {
-            check(lib.nvmlDeviceGetNumFans(device, &mut fan_count), "num fans")
-        } {
+        if let Err(error) =
+            unsafe { check(lib.nvmlDeviceGetNumFans(device, &mut fan_count), "num fans") }
+        {
             unsafe {
                 let _ = lib.nvmlShutdown();
             }
             return Err(error);
         }
+
         Ok(Gpu {
             lib,
             device,
@@ -73,14 +74,30 @@ impl Gpu {
     }
 
     pub fn temp(&self) -> Result<f32, String> {
-        let mut t: u32 = 0;
+        // nvmlDeviceGetTemperature is deprecated as of CUDA 13.0.
+        // nvmlDeviceGetTemperatureV is the current versioned API.
+        const NVML_TEMPERATURE_V1: u32 = 0x0100_000C;
+
+        let mut temperature = nvmlTemperature_t {
+            version: NVML_TEMPERATURE_V1,
+            sensorType: TEMP_GPU,
+            temperature: 0,
+        };
+
+        let get_temperature = self
+            .lib
+            .nvmlDeviceGetTemperatureV
+            .as_ref()
+            .map_err(|e| format!("loading nvmlDeviceGetTemperatureV: {e}"))?;
+
         unsafe {
             check(
-                self.lib.nvmlDeviceGetTemperature(self.device, TEMP_GPU, &mut t),
+                get_temperature(self.device, &mut temperature),
                 "get temperature",
             )?
         };
-        Ok(t as f32)
+
+        Ok(temperature.temperature as f32)
     }
 
     pub fn fan_duty(&self) -> Result<f32, String> {
@@ -88,17 +105,22 @@ impl Gpu {
             return Err("GPU reports no fans".to_string());
         }
 
+        let get_target_fan_speed = self
+            .lib
+            .nvmlDeviceGetTargetFanSpeed
+            .as_ref()
+            .map_err(|e| format!("loading nvmlDeviceGetTargetFanSpeed: {e}"))?;
+
         let mut total = 0.0f32;
         for fan in 0..self.fan_count {
-            let mut speed: u32 = 0;
+            let mut target_speed: u32 = 0;
             unsafe {
                 check(
-                    self.lib
-                        .nvmlDeviceGetFanSpeed_v2(self.device, fan, &mut speed),
-                    "get fan speed",
+                    get_target_fan_speed(self.device, fan, &mut target_speed),
+                    "get target fan speed",
                 )?
             };
-            total += speed as f32;
+            total += target_speed as f32;
         }
 
         Ok(total / self.fan_count as f32)

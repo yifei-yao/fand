@@ -8,7 +8,7 @@ use std::time::Duration;
 
 struct Channel {
     name: String,
-    sensors: Vec<(Sensor, f32)>,
+    sensors: Vec<(Sensor, f32, bool)>, // sensor, setpoint, over-temperature warning active
     follow: Vec<String>,
     fan: Fan,
     primary_setpoint: f32,
@@ -37,7 +37,7 @@ fn build(config: &Config, hardware: &mut Hardware) -> Result<Vec<Channel>, Strin
 
         let mut sensors = Vec::new();
         for s in &c.sensor {
-            sensors.push((hardware.resolve_sensor(&s.source)?, s.setpoint));
+            sensors.push((hardware.resolve_sensor(&s.source)?, s.setpoint, false));
         }
 
         let fan = hardware.resolve_fan(&c.fan)?;
@@ -87,16 +87,27 @@ pub fn run(config_path: &str) -> Result<(), String> {
             let mut error = f32::NEG_INFINITY;
             let mut failed = false;
 
-            for (sensor, setpoint) in &channel.sensors {
+            for (sensor, setpoint, warning_active) in &mut channel.sensors {
                 match hardware.read_temperature(sensor) {
                     Ok(temperature) if temperature.is_finite() => {
-                        error = error.max(temperature - setpoint);
+                        let sensor_error = temperature - *setpoint;
+                        error = error.max(sensor_error);
+
+                        const WARNING_THRESHOLD_CELSIUS: f32 = 5.0;
+                        if sensor_error >= WARNING_THRESHOLD_CELSIUS {
+                            if !*warning_active {
+                                eprintln!(
+                                    "WARNING: {} temperature {:.1}C is {:.1}C above target {:.1}C",
+                                    channel.name, temperature, sensor_error, setpoint
+                                );
+                                *warning_active = true;
+                            }
+                        } else {
+                            *warning_active = false;
+                        }
                     }
                     Ok(temperature) => {
-                        eprintln!(
-                            "{}: invalid sensor value: {temperature}",
-                            channel.name
-                        );
+                        eprintln!("{}: invalid sensor value: {temperature}", channel.name);
                         failed = true;
                     }
                     Err(e) => {
