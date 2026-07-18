@@ -121,11 +121,11 @@ pub fn interactive() -> Result<(), String> {
 
         let existing: Vec<String> = channels.iter().map(|c| c.name.clone()).collect();
         let mut follow: Vec<String> = Vec::new();
-        let mut sensor_configs = Vec::new();
+        let mut sensor = None;
 
         let follows_others = !existing.is_empty()
             && prompt(&format!(
-                "follow other channels' duty instead of sensors (max of them)? existing: {} [y/N]: ",
+                "follow other channels' duty instead of a sensor (max of them)? existing: {} [y/N]: ",
                 existing.join(", ")
             ))?
             .to_lowercase()
@@ -141,21 +141,16 @@ pub fn interactive() -> Result<(), String> {
                 follow.push(name);
             }
         } else {
-            let picks =
-                prompt("sensor number(s), comma-separated (case fans can watch several): ")?;
-            for pick in picks.split(',') {
-                let sensor_index: usize = pick
-                    .trim()
-                    .parse()
-                    .map_err(|_| format!("'{pick}' is not a number"))?;
-                let source = sensors
-                    .get(sensor_index)
-                    .ok_or("sensor number out of range")?
-                    .reference
-                    .clone();
-                let setpoint = prompt_f32(&format!("  setpoint C for {source}"), 78.0)?;
-                sensor_configs.push(SensorConfig { source, setpoint });
-            }
+            let sensor_index: usize = prompt("sensor number: ")?
+                .parse()
+                .map_err(|_| "not a number".to_string())?;
+            let source = sensors
+                .get(sensor_index)
+                .ok_or("sensor number out of range")?
+                .reference
+                .clone();
+            let setpoint = prompt_f32(&format!("  setpoint C for {source}"), 78.0)?;
+            sensor = Some(SensorConfig { source, setpoint });
         }
 
         let floor = prompt_f32("floor duty % (lowest the fan spins reliably)", 25.0)?;
@@ -166,7 +161,7 @@ pub fn interactive() -> Result<(), String> {
             fan,
             floor,
             ceiling,
-            sensor: sensor_configs,
+            sensor,
             follow,
         });
 
@@ -176,7 +171,7 @@ pub fn interactive() -> Result<(), String> {
     }
 
     let config = Config {
-        interval_seconds: 0.1,
+        interval_seconds: 1.0,
         channels,
     };
 

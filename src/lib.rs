@@ -22,8 +22,8 @@ pub struct ChannelConfig {
     pub fan: String,
     pub floor: f32,
     pub ceiling: f32,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sensor: Vec<SensorConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor: Option<SensorConfig>,
     // Follower channel: duty = max duty of these channels, clamped to floor/ceiling.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub follow: Vec<String>,
@@ -66,7 +66,13 @@ pub fn load_config(path: &str) -> Result<Config, String> {
                 channel.name
             ));
         }
-        for sensor in &channel.sensor {
+        if channel.sensor.is_some() == !channel.follow.is_empty() {
+            return Err(format!(
+                "channel '{}': configure exactly one sensor or follow one or more channels",
+                channel.name
+            ));
+        }
+        if let Some(sensor) = &channel.sensor {
             if !sensor.setpoint.is_finite() {
                 return Err(format!(
                     "channel '{}': sensor setpoint must be finite",

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 struct MonitorChannel {
     name: String,
-    sensors: Vec<(Sensor, f32)>,
+    sensor: Option<(Sensor, f32)>,
     fan: Fan,
 }
 
@@ -15,14 +15,14 @@ fn build(config: &Config, hardware: &mut Hardware) -> Result<Vec<MonitorChannel>
     let mut channels = Vec::new();
 
     for channel in &config.channels {
-        let mut sensors = Vec::new();
-        for sensor in &channel.sensor {
-            sensors.push((hardware.resolve_sensor(&sensor.source)?, sensor.setpoint));
-        }
+        let sensor = match &channel.sensor {
+            Some(sensor) => Some((hardware.resolve_sensor(&sensor.source)?, sensor.setpoint)),
+            None => None,
+        };
 
         channels.push(MonitorChannel {
             name: channel.name.clone(),
-            sensors,
+            sensor,
             fan: hardware.resolve_fan(&channel.fan)?,
         });
     }
@@ -33,19 +33,13 @@ fn build(config: &Config, hardware: &mut Hardware) -> Result<Vec<MonitorChannel>
 fn render_channel(channel: &MonitorChannel, hardware: &Hardware) -> String {
     let mut text = channel.name.clone();
 
-    for (index, (sensor, setpoint)) in channel.sensors.iter().enumerate() {
-        if index == 0 {
-            text.push(' ');
-        } else {
-            text.push(',');
-        }
-
+    if let Some((sensor, setpoint)) = &channel.sensor {
         match hardware.read_temperature(sensor) {
             Ok(temperature) if temperature.is_finite() => {
-                text.push_str(&format!("{temperature:.1}/{setpoint:.1}C"));
+                text.push_str(&format!(" {temperature:.1}/{setpoint:.1}C"));
             }
-            Ok(_) => text.push_str("invalid"),
-            Err(_) => text.push_str("ERR"),
+            Ok(_) => text.push_str(" invalid"),
+            Err(_) => text.push_str(" ERR"),
         }
     }
 
