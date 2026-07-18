@@ -21,15 +21,40 @@ impl Controller {
      *
      * For a duty range of 0..100:
      *
-     *   KP = 0.04 -> 4 duty points per °C
+     *   KP = 0.15  -> 15 duty points per adjusted °C
      *   KI = 0.002 -> 0.2 duty points per °C-second
-     *   KD = 0.20 -> 20 duty points per °C/second
+     *   KD = 0.02  -> 2 duty points per °C/second
      *
      * For a duty range of 0.0..1.0, they scale automatically.
      */
     const KP: f32 = 0.15;
     const KI: f32 = 0.002;
     const KD: f32 = 0.02;
+
+    /*
+     * The proportional characteristic is an unclamped odd power law:
+     *
+     *                         |e|  p
+     *     phi(e) = sign(e) E (---)
+     *                          E
+     *
+     * where E is the reference error and p is the power.
+     *
+     * At |e| = E, the adjusted error always equals the real error regardless
+     * of p. With p > 1, errors smaller than E are reduced and errors larger
+     * than E are amplified. There is no clamp or linear continuation.
+     *
+     * Useful values:
+     *
+     *     p = 1.0  ordinary linear proportional control
+     *     p = 1.5  moderate tapering and amplification
+     *     p = 2.0  quadratic; reproduces the previous implementation
+     *     p = 3.0  very strong tapering and amplification
+     *
+     * The characteristic is symmetric: phi(-e) = -phi(e).
+     */
+    const PROPORTIONAL_REFERENCE_ERROR_CELSIUS: f32 = 1.5;
+    const PROPORTIONAL_POWER: f32 = 2.0;
 
     pub fn new(setpoint: f32, floor: f32, ceiling: f32) -> Controller {
         assert!(setpoint.is_finite(), "setpoint must be finite");
@@ -66,7 +91,7 @@ impl Controller {
 
         self.last_call_seconds = Some(now_seconds);
 
-        let Some(temperature) = self.filter.filter(temperature) else {
+        let Some(temperature) = self.filter.filter(temperature, elapsed) else {
             return self.duty;
         };
 
@@ -86,13 +111,31 @@ impl Controller {
         let error_rate = self.samples.slope().unwrap_or(0.0);
 
         /*
-         * Positive error means the temperature is above the setpoint.
-         * All three terms therefore increase fan duty when cooling is needed.
+         * Positive error means the temperature is above the setpoint; negative
+         * error means it is below the setpoint.
+         *
+         * Only the proportional term uses the nonlinear adjusted error:
+         *
+         *                         |e|  p
+         *     phi(e) = sign(e) E (---)
+         *                          E
+         *
+         * The integral term continues to integrate the real signed error, and
+         * the derivative term continues to use the measured temperature slope.
+         *
+         * There is no clamp or linear continuation in the error-shaping
+         * function. The final hardware duty is still clamped to floor..ceiling.
          */
         let error = temperature - self.setpoint;
         let duty_range = self.ceiling - self.floor;
 
-        let proportional = duty_range * Self::KP * error;
+        let reference_error = Self::PROPORTIONAL_REFERENCE_ERROR_CELSIUS;
+
+        let proportional_error = error.signum()
+            * reference_error
+            * (error.abs() / reference_error).powf(Self::PROPORTIONAL_POWER);
+
+        let proportional = duty_range * Self::KP * proportional_error;
         let derivative = duty_range * Self::KD * error_rate;
 
         /*
@@ -130,10 +173,12 @@ impl Controller {
 
         self.duty =
             (self.floor + proportional + integral + derivative).clamp(self.floor, self.ceiling);
+
         eprintln!(
             "[pid] temp={temperature:.2} \
      dt={elapsed:.3} \
      error={error:.2} \
+     shaped_error={proportional_error:.2} \
      rate={error_rate:.3} \
      P={proportional:.2} \
      I={integral:.2} \
@@ -160,6 +205,7 @@ impl Controller {
 
 struct TmpFilter {
     last_tmp: Option<f32>,
+    smoothed_tmp: Option<f32>,
     ignored: usize,
 }
 
@@ -167,35 +213,50 @@ impl TmpFilter {
     fn new() -> Self {
         Self {
             last_tmp: None,
+            smoothed_tmp: None,
             ignored: 0,
         }
     }
 
-    fn filter(&mut self, raw_tmp: f32) -> Option<f32> {
+    fn filter(&mut self, raw_tmp: f32, elapsed: f32) -> Option<f32> {
         if !raw_tmp.is_finite() {
-            return self.last_tmp;
+            return self.smoothed_tmp;
         }
 
         const MAX_IGNORED: usize = 2;
+        const DROP_LIMIT: f32 = 4.0;
+        const SMOOTHING_TIME_CONSTANT_SECONDS: f32 = 2.5;
 
-        let last_tmp = if let Some(tmp) = self.last_tmp {
-            tmp
-        } else {
-            self.last_tmp = Some(raw_tmp);
-            return Some(raw_tmp);
+        let accepted_tmp = match self.last_tmp {
+            None => {
+                self.last_tmp = Some(raw_tmp);
+                raw_tmp
+            }
+
+            Some(last_tmp) if raw_tmp + DROP_LIMIT < last_tmp && self.ignored < MAX_IGNORED => {
+                self.ignored += 1;
+                last_tmp
+            }
+
+            Some(_) => {
+                self.ignored = 0;
+                self.last_tmp = Some(raw_tmp);
+                raw_tmp
+            }
         };
 
-        const DROP_LIMIT: f32 = 4.0;
+        let smoothed_tmp = match self.smoothed_tmp {
+            None => accepted_tmp,
+            Some(previous) => {
+                let alpha = 1.0 - (-elapsed / SMOOTHING_TIME_CONSTANT_SECONDS).exp();
 
-        if raw_tmp + DROP_LIMIT < last_tmp && self.ignored < MAX_IGNORED {
-            self.ignored += 1;
-            return Some(last_tmp);
-        }
+                previous + alpha * (accepted_tmp - previous)
+            }
+        };
 
-        self.ignored = 0;
-        self.last_tmp = Some(raw_tmp);
+        self.smoothed_tmp = Some(smoothed_tmp);
 
-        Some(raw_tmp)
+        Some(smoothed_tmp)
     }
 }
 
