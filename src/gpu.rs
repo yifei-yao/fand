@@ -1,4 +1,6 @@
-// NVIDIA via raw NVML bindings, loaded at runtime. Only built with --features gpu.
+// NVIDIA via raw NVML bindings, loaded at runtime.
+// The project always compiles this module; systems without NVIDIA simply fail
+// NVML discovery cleanly at runtime when libnvidia-ml.so.1 is unavailable.
 use nvml_wrapper_sys::bindings::{
     nvmlDevice_t, nvmlReturn_enum_NVML_SUCCESS as OK,
     nvmlTemperatureSensors_enum_NVML_TEMPERATURE_GPU as TEMP_GPU, NvmlLib,
@@ -24,10 +26,29 @@ impl Gpu {
         let lib = unsafe { NvmlLib::new("libnvidia-ml.so.1") }
             .map_err(|e| format!("loading libnvidia-ml.so.1: {e}"))?;
         unsafe { check(lib.nvmlInit_v2(), "init")? };
+
         let mut device: nvmlDevice_t = std::ptr::null_mut();
-        unsafe { check(lib.nvmlDeviceGetHandleByIndex_v2(index, &mut device), "get handle")? };
+        if let Err(error) = unsafe {
+            check(
+                lib.nvmlDeviceGetHandleByIndex_v2(index, &mut device),
+                "get handle",
+            )
+        } {
+            unsafe {
+                let _ = lib.nvmlShutdown();
+            }
+            return Err(error);
+        }
+
         let mut fan_count: u32 = 0;
-        unsafe { check(lib.nvmlDeviceGetNumFans(device, &mut fan_count), "num fans")? };
+        if let Err(error) = unsafe {
+            check(lib.nvmlDeviceGetNumFans(device, &mut fan_count), "num fans")
+        } {
+            unsafe {
+                let _ = lib.nvmlShutdown();
+            }
+            return Err(error);
+        }
         Ok(Gpu {
             lib,
             device,
@@ -60,6 +81,27 @@ impl Gpu {
             )?
         };
         Ok(t as f32)
+    }
+
+    pub fn fan_duty(&self) -> Result<f32, String> {
+        if self.fan_count == 0 {
+            return Err("GPU reports no fans".to_string());
+        }
+
+        let mut total = 0.0f32;
+        for fan in 0..self.fan_count {
+            let mut speed: u32 = 0;
+            unsafe {
+                check(
+                    self.lib
+                        .nvmlDeviceGetFanSpeed_v2(self.device, fan, &mut speed),
+                    "get fan speed",
+                )?
+            };
+            total += speed as f32;
+        }
+
+        Ok(total / self.fan_count as f32)
     }
 
     pub fn set_duty(&mut self, duty_percent: f32) -> Result<(), String> {

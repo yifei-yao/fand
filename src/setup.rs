@@ -1,5 +1,5 @@
 // Interactive setup: scan hwmon + NVML, show live readings, let the user
-// pick fans and sensors by number, write the config.
+// pick fans and sensors by number, then emit only the finished TOML on stdout.
 use crate::{ChannelConfig, Config, SensorConfig};
 use std::io::{BufRead, Write};
 
@@ -14,13 +14,15 @@ struct FoundFan {
 }
 
 fn prompt(question: &str) -> Result<String, String> {
-    print!("{question}");
-    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    eprint!("{question}");
+    std::io::stderr().flush().map_err(|e| e.to_string())?;
+
     let mut line = String::new();
     std::io::stdin()
         .lock()
         .read_line(&mut line)
         .map_err(|e| e.to_string())?;
+
     Ok(line.trim().to_string())
 }
 
@@ -35,7 +37,7 @@ fn prompt_f32(question: &str, default: f32) -> Result<f32, String> {
     }
 }
 
-pub fn interactive(config_path: &str) -> Result<(), String> {
+pub fn interactive() -> Result<(), String> {
     let mut sensors: Vec<FoundSensor> = Vec::new();
     let mut fans: Vec<FoundFan> = Vec::new();
 
@@ -52,6 +54,7 @@ pub fn interactive(config_path: &str) -> Result<(), String> {
             ),
         });
     }
+
     for p in &hwmon_pwms {
         let percent = p.current_raw as f32 / 255.0 * 100.0;
         let note = if p.has_enable { "" } else { " [no pwm_enable]" };
@@ -65,24 +68,23 @@ pub fn interactive(config_path: &str) -> Result<(), String> {
         });
     }
 
-    #[cfg(feature = "gpu")]
-    {
-        for index in 0..8u32 {
-            match crate::gpu::Gpu::new(index) {
-                Ok(g) => {
-                    let temp = g.temp().unwrap_or(f32::NAN);
-                    let name = g.name();
-                    sensors.push(FoundSensor {
-                        reference: format!("nvml:{index}"),
-                        description: format!("{name:<30} {temp:>6.1} C  (GPU {index})"),
-                    });
-                    fans.push(FoundFan {
-                        reference: format!("nvml:{index}"),
-                        description: format!("{name:<30} (GPU {index}, all fans)"),
-                    });
-                }
-                Err(_) => break,
+    // NVIDIA is optional at runtime. If NVML is absent, discovery simply stops
+    // and setup continues with hwmon devices only.
+    for index in 0..8u32 {
+        match crate::gpu::Gpu::new(index) {
+            Ok(gpu) => {
+                let temp = gpu.temp().unwrap_or(f32::NAN);
+                let name = gpu.name();
+                sensors.push(FoundSensor {
+                    reference: format!("nvml:{index}"),
+                    description: format!("{name:<30} {temp:>6.1} C  (GPU {index})"),
+                });
+                fans.push(FoundFan {
+                    reference: format!("nvml:{index}"),
+                    description: format!("{name:<30} (GPU {index}, all fans)"),
+                });
             }
+            Err(_) => break,
         }
     }
 
@@ -90,18 +92,19 @@ pub fn interactive(config_path: &str) -> Result<(), String> {
         return Err("no sensors or no controllable fans found (need root?)".to_string());
     }
 
-    println!("\nTemperature sensors:");
-    for (i, s) in sensors.iter().enumerate() {
-        println!("  [{i}] {}", s.description);
+    eprintln!("\nTemperature sensors:");
+    for (i, sensor) in sensors.iter().enumerate() {
+        eprintln!("  [{i}] {}", sensor.description);
     }
-    println!("\nControllable fans:");
-    for (i, f) in fans.iter().enumerate() {
-        println!("  [{i}] {}", f.description);
+
+    eprintln!("\nControllable fans:");
+    for (i, fan) in fans.iter().enumerate() {
+        eprintln!("  [{i}] {}", fan.description);
     }
 
     let mut channels: Vec<ChannelConfig> = Vec::new();
     loop {
-        println!("\n--- channel {} ---", channels.len() + 1);
+        eprintln!("\n--- channel {} ---", channels.len() + 1);
         let name = prompt("channel name (e.g. cpu, gpu, case): ")?;
         if name.is_empty() {
             return Err("empty name".to_string());
@@ -116,12 +119,10 @@ pub fn interactive(config_path: &str) -> Result<(), String> {
             .reference
             .clone();
 
-        let existing: Vec<String> = channels
-            .iter()
-            .map(|c: &ChannelConfig| c.name.clone())
-            .collect();
+        let existing: Vec<String> = channels.iter().map(|c| c.name.clone()).collect();
         let mut follow: Vec<String> = Vec::new();
         let mut sensor_configs = Vec::new();
+
         let follows_others = !existing.is_empty()
             && prompt(&format!(
                 "follow other channels' duty instead of sensors (max of them)? existing: {} [y/N]: ",
@@ -129,6 +130,7 @@ pub fn interactive(config_path: &str) -> Result<(), String> {
             ))?
             .to_lowercase()
                 == "y";
+
         if follows_others {
             let picks = prompt("channel name(s) to follow, comma-separated: ")?;
             for pick in picks.split(',') {
@@ -177,9 +179,10 @@ pub fn interactive(config_path: &str) -> Result<(), String> {
         interval_seconds: 1.0,
         channels,
     };
+
     let toml_text = toml::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    std::fs::write(config_path, &toml_text).map_err(|e| e.to_string())?;
-    println!("\nwrote {config_path}:\n\n{toml_text}");
-    println!("start with: sudo fand run {config_path}");
+    print!("--- generated config.toml ---\n{toml_text}");
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+
     Ok(())
 }

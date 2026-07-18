@@ -54,7 +54,7 @@ impl Controller {
      * The characteristic is symmetric: phi(-e) = -phi(e).
      */
     const PROPORTIONAL_REFERENCE_ERROR_CELSIUS: f32 = 1.5;
-    const PROPORTIONAL_POWER: f32 = 2.0;
+    const PROPORTIONAL_POWER: f32 = 3.0;
 
     pub fn new(setpoint: f32, floor: f32, ceiling: f32) -> Controller {
         assert!(setpoint.is_finite(), "setpoint must be finite");
@@ -174,22 +174,7 @@ impl Controller {
         self.duty =
             (self.floor + proportional + integral + derivative).clamp(self.floor, self.ceiling);
 
-        eprintln!(
-            "[pid] temp={temperature:.2} \
-     dt={elapsed:.3} \
-     error={error:.2} \
-     shaped_error={proportional_error:.2} \
-     rate={error_rate:.3} \
-     P={proportional:.2} \
-     I={integral:.2} \
-     D={derivative:.2} \
-     integral_state={:.2} \
-     proposed={proposed_duty:.2} \
-     duty={:.2} \
-     block_high={pushes_above_ceiling} \
-     block_low={pushes_below_floor}",
-            self.integral_error, self.duty,
-        );
+
 
         self.duty
     }

@@ -3,12 +3,14 @@ name = "fand"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-default = []
-gpu = ["dep:nvml-wrapper-sys"]
-
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "1.1.3"
 ctrlc = { version = "3.5.2", features = ["termination"] }
-nvml-wrapper-sys = { version = "0.9.1", optional = true }
+nvml-wrapper-sys = "0.9.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

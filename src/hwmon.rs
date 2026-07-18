@@ -6,15 +6,15 @@ use std::path::PathBuf;
 
 pub struct TempEntry {
     pub chip: String,
-    pub file: String,  // tempN_input
-    pub label: String, // tempN_label content or file name
+    pub file: String,
+    pub label: String,
     pub path: PathBuf,
     pub celsius: f32,
 }
 
 pub struct PwmEntry {
     pub chip: String,
-    pub file: String, // pwmN
+    pub file: String,
     pub path: PathBuf,
     pub current_raw: u32,
     pub has_enable: bool,
@@ -119,6 +119,12 @@ impl PwmFan {
         }
     }
 
+    pub fn read_duty(&self) -> Result<f32, String> {
+        let raw = fs::read_to_string(&self.pwm_path).map_err(|e| e.to_string())?;
+        let raw = raw.trim().parse::<f32>().map_err(|e| e.to_string())?;
+        Ok(raw / 255.0 * 100.0)
+    }
+
     pub fn engage(&mut self) -> Result<(), String> {
         if self.enable_path.exists() {
             let previous = fs::read_to_string(&self.enable_path).map_err(|e| e.to_string())?;
@@ -138,5 +144,11 @@ impl PwmFan {
         if let Some(previous) = self.saved_enable.take() {
             let _ = fs::write(&self.enable_path, previous);
         }
+    }
+}
+
+impl Drop for PwmFan {
+    fn drop(&mut self) {
+        self.release();
     }
 }
