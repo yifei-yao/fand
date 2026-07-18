@@ -91,7 +91,7 @@ impl Controller {
 
         self.last_call_seconds = Some(now_seconds);
 
-        let Some(temperature) = self.drop_filter.filter(temperature) else {
+        let Some(temperature) = self.drop_filter.filter(temperature, now_seconds) else {
             return self.duty;
         };
 
@@ -188,40 +188,41 @@ impl Controller {
 
 struct DropFilter {
     last_tmp: Option<f32>,
-    ignored: usize,
+    suspicious_drop_since: Option<f32>,
 }
 
 impl DropFilter {
     fn new() -> Self {
         Self {
             last_tmp: None,
-            ignored: 0,
+            suspicious_drop_since: None,
         }
     }
 
-    fn filter(&mut self, raw_tmp: f32) -> Option<f32> {
+    fn filter(&mut self, raw_tmp: f32, now_seconds: f32) -> Option<f32> {
         if !raw_tmp.is_finite() {
             return self.last_tmp;
         }
-
-        const MAX_IGNORED: usize = 2;
         const DROP_LIMIT_CELSIUS: f32 = 4.0;
-
-        match self.last_tmp {
+        const DROP_HOLD_SECONDS: f32 = 1.0;
+        let Some(last_tmp) = self.last_tmp else {
+            self.last_tmp = Some(raw_tmp);
+            return Some(raw_tmp);
+        };
+        let suspicious_drop = raw_tmp + DROP_LIMIT_CELSIUS < last_tmp;
+        if !suspicious_drop {
+            self.suspicious_drop_since = None;
+            self.last_tmp = Some(raw_tmp);
+            return Some(raw_tmp);
+        }
+        match self.suspicious_drop_since {
             None => {
-                self.last_tmp = Some(raw_tmp);
-                Some(raw_tmp)
-            }
-
-            Some(last_tmp)
-                if raw_tmp + DROP_LIMIT_CELSIUS < last_tmp && self.ignored < MAX_IGNORED =>
-            {
-                self.ignored += 1;
+                self.suspicious_drop_since = Some(now_seconds);
                 Some(last_tmp)
             }
-
+            Some(since) if now_seconds - since < DROP_HOLD_SECONDS => Some(last_tmp),
             Some(_) => {
-                self.ignored = 0;
+                self.suspicious_drop_since = None;
                 self.last_tmp = Some(raw_tmp);
                 Some(raw_tmp)
             }
