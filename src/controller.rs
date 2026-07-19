@@ -7,7 +7,7 @@ use std::{fmt, time::Instant};
 //    fraction of the gap toward that temperature.
 // C: run PID and update the physical fan once every C sensor samples.
 pub const SENSOR_SAMPLE_RATE_HZ: f32 = 10.0;
-pub const EMA_RESPONSE_PER_SECOND: f32 = 0.75;
+pub const EMA_RESPONSE_PER_SECOND: f32 = 0.65;
 pub const FAN_UPDATE_EVERY_SAMPLES: usize = 5;
 
 pub struct Controller {
@@ -36,23 +36,7 @@ impl Controller {
      */
     const KP: f32 = 0.04;
     const KI: f32 = 0.005;
-    const KD: f32 = 0.02;
-
-    /*
-     * The proportional characteristic is an unclamped odd power law:
-     *
-     *                         |e|  p
-     *     phi(e) = sign(e) E (---)
-     *                          E
-     *
-     * where E is the reference error and p is the power.
-     *
-     * At |e| = E, the adjusted error always equals the real error regardless
-     * of p. With p > 1, errors smaller than E are reduced and errors larger
-     * than E are amplified. There is no clamp or linear continuation.
-     */
-    const PROPORTIONAL_REFERENCE_ERROR_CELSIUS: f32 = 1.5;
-    const PROPORTIONAL_POWER: f32 = 2.0;
+    const KD: f32 = 0.01;
 
     pub fn new(setpoint: f32, floor: f32, ceiling: f32) -> Controller {
         assert!(setpoint.is_finite(), "setpoint must be finite");
@@ -144,13 +128,13 @@ impl Controller {
         let error = temperature - self.setpoint;
         let duty_range = self.ceiling - self.floor;
 
-        let reference_error = Self::PROPORTIONAL_REFERENCE_ERROR_CELSIUS;
+        // let reference_error = Self::PROPORTIONAL_REFERENCE_ERROR_CELSIUS;
 
-        let proportional_error = error.signum()
-            * reference_error
-            * (error.abs() / reference_error).powf(Self::PROPORTIONAL_POWER);
+        // let proportional_error = error.signum()
+        //     * reference_error
+        //     * (error.abs() / reference_error).powf(Self::PROPORTIONAL_POWER);
 
-        let proportional = duty_range * Self::KP * proportional_error;
+        let proportional = duty_range * Self::KP * error;
         let derivative = duty_range * Self::KD * error_rate;
 
         /*

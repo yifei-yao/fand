@@ -104,7 +104,7 @@ fn run_sensor_channel(
     mut tick_rx: broadcast::Receiver<()>,
     running: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    const WARNING_THRESHOLD_CELSIUS: f32 = 5.0;
+    const WARNING_THRESHOLD_CELSIUS: f32 = 6.0;
 
     let Channel {
         name,
