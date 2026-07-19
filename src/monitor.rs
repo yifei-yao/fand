@@ -1,3 +1,4 @@
+use crate::controller::SENSOR_SAMPLE_RATE_HZ;
 use crate::hardware::{Fan, Hardware, Sensor};
 use crate::{Config, load_config};
 use std::io::Write;
@@ -77,7 +78,7 @@ pub fn run(config_path: &str) -> Result<(), String> {
         write!(stderr, "\r\x1b[2K{line}").map_err(|e| e.to_string())?;
         stderr.flush().map_err(|e| e.to_string())?;
 
-        std::thread::sleep(Duration::from_secs_f32(config.interval_seconds));
+        std::thread::sleep(Duration::from_secs_f32(1.0 / SENSOR_SAMPLE_RATE_HZ));
     }
 
     writeln!(stderr).map_err(|e| e.to_string())?;

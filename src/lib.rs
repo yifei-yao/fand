@@ -31,14 +31,8 @@ pub struct ChannelConfig {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Config {
-    #[serde(default = "default_interval")]
-    pub interval_seconds: f32,
     #[serde(rename = "channel")]
     pub channels: Vec<ChannelConfig>,
-}
-
-fn default_interval() -> f32 {
-    0.1
 }
 
 pub fn load_config(path: &str) -> Result<Config, String> {
@@ -47,10 +41,6 @@ pub fn load_config(path: &str) -> Result<Config, String> {
 
     if config.channels.is_empty() {
         return Err("no [[channel]] entries; run `fand setup` first".to_string());
-    }
-
-    if !config.interval_seconds.is_finite() || config.interval_seconds <= 0.0 {
-        return Err("interval_seconds must be finite and greater than zero".to_string());
     }
 
     for channel in &config.channels {

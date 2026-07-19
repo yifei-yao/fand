@@ -170,10 +170,7 @@ pub fn interactive() -> Result<(), String> {
         }
     }
 
-    let config = Config {
-        interval_seconds: 0.1,
-        channels,
-    };
+    let config = Config { channels };
 
     let toml_text = toml::to_string_pretty(&config).map_err(|e| e.to_string())?;
     print!("--- generated config.toml ---\n{toml_text}");

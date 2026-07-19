@@ -1,4 +1,4 @@
-use crate::controller::Controller;
+use crate::controller::{Controller, FAN_UPDATE_EVERY_SAMPLES, SENSOR_SAMPLE_RATE_HZ};
 use crate::hardware::Hardware;
 use crate::{Config, load_config};
 use std::sync::Arc;
@@ -84,12 +84,28 @@ fn wait_for_tick(tick_rx: &mut broadcast::Receiver<()>) -> bool {
     }
 }
 
+fn write_duty(
+    name: &str,
+    hardware: &mut Hardware,
+    fan: &mut crate::hardware::Fan,
+    duty_tx: &Option<watch::Sender<f32>>,
+    duty: f32,
+) {
+    if let Err(e) = hardware.set_fan_duty(fan, duty) {
+        eprintln!("{}: fan write failed: {e}", name);
+    }
+    if let Some(duty_tx) = duty_tx {
+        duty_tx.send_replace(duty);
+    }
+}
+
 fn run_sensor_channel(
     channel: Channel,
     mut tick_rx: broadcast::Receiver<()>,
     running: Arc<AtomicBool>,
 ) -> Result<(), String> {
     const WARNING_THRESHOLD_CELSIUS: f32 = 5.0;
+
     let Channel {
         name,
         sensor,
@@ -99,18 +115,23 @@ fn run_sensor_channel(
         duty_tx,
         ..
     } = channel;
+
     let (sensor_source, setpoint) = sensor.expect("sensor worker without sensor");
     let mut hardware = Hardware::new();
     let sensor = hardware.resolve_sensor(&sensor_source)?;
     let mut fan = hardware.resolve_fan(&fan)?;
     hardware.engage_fan(&mut fan)?;
+
     let mut controller = Controller::new(setpoint, floor, ceiling);
     let mut warning_active = false;
+    let mut samples_since_update = 0usize;
+
     while running.load(Ordering::SeqCst) && wait_for_tick(&mut tick_rx) {
         if !running.load(Ordering::SeqCst) {
             break;
         }
-        let duty = match hardware.read_temperature(&sensor) {
+
+        match hardware.read_temperature(&sensor) {
             Ok(temperature) if temperature.is_finite() => {
                 let sensor_error = temperature - setpoint;
                 if sensor_error >= WARNING_THRESHOLD_CELSIUS {
@@ -124,24 +145,40 @@ fn run_sensor_channel(
                 } else {
                     warning_active = false;
                 }
-                controller.step(temperature)
+
+                let Some(adjusted_temperature) = controller.sample_temperature(temperature) else {
+                    continue;
+                };
+
+                samples_since_update += 1;
+                if samples_since_update < FAN_UPDATE_EVERY_SAMPLES {
+                    continue;
+                }
+                samples_since_update = 0;
+
+                // P, I, D, and the physical fan all advance together at the
+                // control rate, using the latest continuously updated EMA.
+                let duty = controller.step(adjusted_temperature);
+                write_duty(&name, &mut hardware, &mut fan, &duty_tx, duty);
             }
             Ok(temperature) => {
+                // Preserve the fail-safe behavior for an invalid sensor value.
+                // This bypasses the normal C-sample cadence intentionally.
                 eprintln!("{}: invalid sensor value: {temperature}", name);
-                controller.ceiling()
+                samples_since_update = 0;
+                let duty = controller.ceiling();
+                write_duty(&name, &mut hardware, &mut fan, &duty_tx, duty);
             }
             Err(e) => {
+                // A read failure is also an immediate fail-safe condition.
                 eprintln!("{}: sensor read failed: {e}", name);
-                controller.ceiling()
+                samples_since_update = 0;
+                let duty = controller.ceiling();
+                write_duty(&name, &mut hardware, &mut fan, &duty_tx, duty);
             }
-        };
-        if let Err(e) = hardware.set_fan_duty(&mut fan, duty) {
-            eprintln!("{}: fan write failed: {e}", name);
-        }
-        if let Some(duty_tx) = &duty_tx {
-            duty_tx.send_replace(duty);
         }
     }
+
     hardware.release_fan(&mut fan);
     hardware.release_gpus();
     Ok(())
@@ -194,11 +231,7 @@ fn run_follower_channel(channel: Channel, runtime: Handle) -> Result<(), String>
     }
 }
 
-async fn run_async(
-    channels: Vec<Channel>,
-    interval_seconds: f32,
-    running: Arc<AtomicBool>,
-) -> Result<(), String> {
+async fn run_async(channels: Vec<Channel>, running: Arc<AtomicBool>) -> Result<(), String> {
     let (tick_tx, _) = broadcast::channel::<()>(1);
     let mut workers = Vec::new();
     for channel in channels {
@@ -225,7 +258,8 @@ async fn run_async(
             }));
         }
     }
-    let period = Duration::from_secs_f32(interval_seconds);
+
+    let period = Duration::from_secs_f32(1.0 / SENSOR_SAMPLE_RATE_HZ);
     let mut ticker = tokio::time::interval(period);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     while running.load(Ordering::SeqCst) {
@@ -236,6 +270,7 @@ async fn run_async(
         let _ = tick_tx.send(());
     }
     drop(tick_tx);
+
     for worker in workers {
         worker
             .await
@@ -259,7 +294,7 @@ pub fn run(config_path: &str) -> Result<(), String> {
         .enable_time()
         .build()
         .map_err(|e| format!("creating Tokio runtime: {e}"))?;
-    let result = runtime.block_on(run_async(channels, config.interval_seconds, running));
+    let result = runtime.block_on(run_async(channels, running));
     eprintln!("fand: automatic control restored");
     result
 }

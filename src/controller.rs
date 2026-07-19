@@ -1,18 +1,25 @@
 use std::time::Instant;
 
+// Fixed internal control timing/filter parameters.
+//
+// X: sample the sensor this many times per second.
+// P: after one second at a sustained new temperature, the EMA has closed this
+//    fraction of the gap toward that temperature.
+// C: run PID and update the physical fan once every C sensor samples.
+pub const SENSOR_SAMPLE_RATE_HZ: f32 = 10.0;
+pub const EMA_RESPONSE_PER_SECOND: f32 = 0.75;
+pub const FAN_UPDATE_EVERY_SAMPLES: usize = 5;
+
 pub struct Controller {
     setpoint: f32,
     floor: f32,
     ceiling: f32,
     duty: f32,
-
     integral_error: f32,
-
     start: Instant,
     last_call_seconds: Option<f32>,
-
-    samples: SampleWindow,
-    drop_filter: TempFilter,
+    previous_temperature: Option<f32>,
+    temp_filter: TempFilter,
 }
 
 impl Controller {
@@ -43,15 +50,6 @@ impl Controller {
      * At |e| = E, the adjusted error always equals the real error regardless
      * of p. With p > 1, errors smaller than E are reduced and errors larger
      * than E are amplified. There is no clamp or linear continuation.
-     *
-     * Useful values:
-     *
-     *     p = 1.0  ordinary linear proportional control
-     *     p = 1.5  moderate tapering and amplification
-     *     p = 2.0  quadratic; reproduces the previous implementation
-     *     p = 3.0  very strong tapering and amplification
-     *
-     * The characteristic is symmetric: phi(-e) = -phi(e).
      */
     const PROPORTIONAL_REFERENCE_ERROR_CELSIUS: f32 = 1.5;
     const PROPORTIONAL_POWER: f32 = 2.0;
@@ -61,6 +59,20 @@ impl Controller {
         assert!(floor.is_finite(), "floor must be finite");
         assert!(ceiling.is_finite(), "ceiling must be finite");
         assert!(floor <= ceiling, "floor must not exceed ceiling");
+        assert!(
+            SENSOR_SAMPLE_RATE_HZ.is_finite() && SENSOR_SAMPLE_RATE_HZ > 0.0,
+            "sensor sample rate must be finite and greater than zero"
+        );
+        assert!(
+            EMA_RESPONSE_PER_SECOND.is_finite()
+                && EMA_RESPONSE_PER_SECOND >= 0.0
+                && EMA_RESPONSE_PER_SECOND <= 1.0,
+            "EMA response per second must be within 0..=1"
+        );
+        assert!(
+            FAN_UPDATE_EVERY_SAMPLES > 0,
+            "fan update scalar must be greater than zero"
+        );
 
         Controller {
             setpoint,
@@ -72,12 +84,23 @@ impl Controller {
 
             start: Instant::now(),
             last_call_seconds: None,
+            previous_temperature: None,
 
-            samples: SampleWindow::new(),
-            drop_filter: TempFilter::new(),
+            temp_filter: TempFilter::new(),
         }
     }
 
+    // Called for every raw sensor sample. The existing bad-value/jump guard is
+    // applied first, then the accepted temperature feeds the infinite-memory
+    // EMA. The returned value is the adjusted temperature used by the PID.
+    pub fn sample_temperature(&mut self, raw_temperature: f32) -> Option<f32> {
+        let now_seconds = self.start.elapsed().as_secs_f32();
+        self.temp_filter.filter(raw_temperature, now_seconds)
+    }
+
+    // Called only at the actuator/control rate (once every C sensor samples).
+    // P, I, and D all operate on the same EMA-adjusted temperature, and D is
+    // derived from consecutive adjusted temperatures at this same cadence.
     pub fn step(&mut self, temperature: f32) -> f32 {
         let now_seconds = self.start.elapsed().as_secs_f32();
 
@@ -91,12 +114,6 @@ impl Controller {
 
         self.last_call_seconds = Some(now_seconds);
 
-        let Some(temperature) = self.drop_filter.filter(temperature, now_seconds) else {
-            return self.duty;
-        };
-
-        self.samples.push(now_seconds, temperature);
-
         /*
          * Because the setpoint is constant:
          *
@@ -104,27 +121,22 @@ impl Controller {
          *         = d(temperature - setpoint)/dt
          *         = d(temperature)/dt
          *
-         * The regression gives us a filtered derivative measurement.
-         * Until enough samples exist, derivative action is disabled, while
-         * proportional action still works immediately.
+         * The input temperature is already EMA-filtered, so derivative action
+         * is simply the slope between consecutive control/fan updates.
          */
-        let error_rate = self.samples.slope().unwrap_or(0.0);
+        let error_rate = match self.previous_temperature {
+            Some(previous) if elapsed > f32::EPSILON => (temperature - previous) / elapsed,
+            _ => 0.0,
+        };
+        self.previous_temperature = Some(temperature);
 
         /*
          * Positive error means the temperature is above the setpoint; negative
          * error means it is below the setpoint.
          *
-         * Only the proportional term uses the nonlinear adjusted error:
-         *
-         *                         |e|  p
-         *     phi(e) = sign(e) E (---)
-         *                          E
-         *
-         * The integral term continues to integrate the real signed error, and
-         * the derivative term continues to use the measured temperature slope.
-         *
-         * There is no clamp or linear continuation in the error-shaping
-         * function. The final hardware duty is still clamped to floor..ceiling.
+         * Only the proportional term uses the nonlinear adjusted error. The
+         * integral term integrates the real signed EMA-filtered error, and the
+         * derivative term uses the EMA-filtered temperature slope.
          */
         let error = temperature - self.setpoint;
         let duty_range = self.ceiling - self.floor;
@@ -157,12 +169,8 @@ impl Controller {
          *
          * Do not integrate when the output is already saturated and the
          * current error would push it farther into saturation.
-         *
-         * Integration is still allowed when it moves the output back toward
-         * the usable range.
          */
         let pushes_above_ceiling = proposed_duty > self.ceiling && error > 0.0;
-
         let pushes_below_floor = proposed_duty < self.floor && error < 0.0;
 
         if !pushes_above_ceiling && !pushes_below_floor {
@@ -189,133 +197,80 @@ impl Controller {
 struct TempFilter {
     last_tmp: Option<f32>,
     suspicious_since: Option<f32>,
+    adjusted_tmp: Option<f32>,
+    ema_sample_fraction: f32,
 }
 
 impl TempFilter {
     fn new() -> Self {
+        // Convert the configured per-second EMA response into the exact
+        // per-sample coefficient:
+        //
+        //   alpha = 1 - (1 - P)^(1 / X)
+        //
+        // so X samples at a sustained new value close exactly P of the
+        // remaining gap after one second.
+        let ema_sample_fraction = if EMA_RESPONSE_PER_SECOND <= 0.0 {
+            0.0
+        } else if EMA_RESPONSE_PER_SECOND >= 1.0 {
+            1.0
+        } else {
+            1.0 - (1.0 - EMA_RESPONSE_PER_SECOND).powf(1.0 / SENSOR_SAMPLE_RATE_HZ)
+        };
+
         Self {
             last_tmp: None,
             suspicious_since: None,
+            adjusted_tmp: None,
+            ema_sample_fraction,
         }
     }
 
     fn filter(&mut self, raw_tmp: f32, now_seconds: f32) -> Option<f32> {
+        // A non-finite sample contributes no new information to the EMA.
+        // Keep the last adjusted value if one exists.
         if !raw_tmp.is_finite() {
-            return self.last_tmp;
+            return self.adjusted_tmp;
         }
+
         const JUMP_LIMIT_CELSIUS: f32 = 3.0;
         const JUMP_HOLD_SECONDS: f32 = 1.0;
-        let Some(last_tmp) = self.last_tmp else {
-            self.last_tmp = Some(raw_tmp);
-            return Some(raw_tmp);
-        };
-        let suspicious_jump = (raw_tmp - last_tmp).abs() >= JUMP_LIMIT_CELSIUS;
-        if !suspicious_jump {
-            self.suspicious_since = None;
-            self.last_tmp = Some(raw_tmp);
-            return Some(raw_tmp);
-        }
-        match self.suspicious_since {
+
+        let accepted_tmp = match self.last_tmp {
             None => {
-                self.suspicious_since = Some(now_seconds);
-                Some(last_tmp)
-            }
-            Some(since) if now_seconds - since < JUMP_HOLD_SECONDS => Some(last_tmp),
-            Some(_) => {
-                self.suspicious_since = None;
                 self.last_tmp = Some(raw_tmp);
-                Some(raw_tmp)
+                raw_tmp
             }
-        }
-    }
-}
+            Some(last_tmp) => {
+                let suspicious_jump = (raw_tmp - last_tmp).abs() >= JUMP_LIMIT_CELSIUS;
 
-struct SampleWindow {
-    seconds: [f32; SampleWindow::CAPACITY],
-    temperatures: [f32; SampleWindow::CAPACITY],
-    next: usize,
-    count: usize,
-}
-
-impl SampleWindow {
-    const CAPACITY: usize = 32;
-
-    fn new() -> SampleWindow {
-        SampleWindow {
-            seconds: [0.0; SampleWindow::CAPACITY],
-            temperatures: [0.0; SampleWindow::CAPACITY],
-            next: 0,
-            count: 0,
-        }
-    }
-
-    fn push(&mut self, seconds: f32, temperature: f32) {
-        self.seconds[self.next] = seconds;
-        self.temperatures[self.next] = temperature;
-        self.next = (self.next + 1) % SampleWindow::CAPACITY;
-        self.count = (self.count + 1).min(SampleWindow::CAPACITY);
-    }
-
-    fn slope(&self) -> Option<f32> {
-        const WINDOW_SECONDS: f32 = 4.0;
-        const WEIGHT_TIME_CONSTANT_SECONDS: f32 = 2.0;
-
-        let newest_index = (self.next + SampleWindow::CAPACITY - 1) % SampleWindow::CAPACITY;
-
-        let newest = self.seconds[newest_index];
-
-        let mut count = 0usize;
-        let mut weight_sum = 0.0f32;
-        let mut weighted_seconds = 0.0f32;
-        let mut weighted_temperature = 0.0f32;
-
-        for index in 0..self.count {
-            let age = newest - self.seconds[index];
-
-            if age > WINDOW_SECONDS {
-                continue;
+                if !suspicious_jump {
+                    self.suspicious_since = None;
+                    self.last_tmp = Some(raw_tmp);
+                    raw_tmp
+                } else {
+                    match self.suspicious_since {
+                        None => {
+                            self.suspicious_since = Some(now_seconds);
+                            last_tmp
+                        }
+                        Some(since) if now_seconds - since < JUMP_HOLD_SECONDS => last_tmp,
+                        Some(_) => {
+                            self.suspicious_since = None;
+                            self.last_tmp = Some(raw_tmp);
+                            raw_tmp
+                        }
+                    }
+                }
             }
+        };
 
-            let weight = (-age / WEIGHT_TIME_CONSTANT_SECONDS).exp();
-            let relative_seconds = -age;
+        let adjusted_tmp = match self.adjusted_tmp {
+            None => accepted_tmp,
+            Some(previous) => previous + self.ema_sample_fraction * (accepted_tmp - previous),
+        };
 
-            count += 1;
-            weight_sum += weight;
-            weighted_seconds += weight * relative_seconds;
-            weighted_temperature += weight * self.temperatures[index];
-        }
-
-        if count < 3 || weight_sum <= f32::EPSILON {
-            return None;
-        }
-
-        let seconds_mean = weighted_seconds / weight_sum;
-        let temperature_mean = weighted_temperature / weight_sum;
-
-        let mut covariance = 0.0f32;
-        let mut variance = 0.0f32;
-
-        for index in 0..self.count {
-            let age = newest - self.seconds[index];
-
-            if age > WINDOW_SECONDS {
-                continue;
-            }
-
-            let weight = (-age / WEIGHT_TIME_CONSTANT_SECONDS).exp();
-            let relative_seconds = -age;
-
-            let time_offset = relative_seconds - seconds_mean;
-            let temperature_offset = self.temperatures[index] - temperature_mean;
-
-            covariance += weight * time_offset * temperature_offset;
-            variance += weight * time_offset * time_offset;
-        }
-
-        if variance <= f32::EPSILON {
-            return None;
-        }
-
-        Some(covariance / variance)
+        self.adjusted_tmp = Some(adjusted_tmp);
+        Some(adjusted_tmp)
     }
 }
