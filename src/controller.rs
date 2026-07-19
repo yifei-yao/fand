@@ -23,21 +23,6 @@ pub struct Controller {
 }
 
 impl Controller {
-    /*
-     * The gains are expressed as fractions of the available duty range.
-     *
-     * For a duty range of 0..100:
-     *
-     *   KP = 0.15  -> 15 duty points per adjusted °C
-     *   KI = 0.002 -> 0.2 duty points per °C-second
-     *   KD = 0.02  -> 2 duty points per °C/second
-     *
-     * For a duty range of 0.0..1.0, they scale automatically.
-     */
-    const KP: f32 = 0.04;
-    const KI: f32 = 0.005;
-    const KD: f32 = 0.01;
-
     pub fn new(setpoint: f32, floor: f32, ceiling: f32) -> Controller {
         assert!(setpoint.is_finite(), "setpoint must be finite");
         assert!(floor.is_finite(), "floor must be finite");
@@ -89,6 +74,9 @@ impl Controller {
     // P, I, and D all operate on the same EMA-adjusted temperature, and D is
     // derived from consecutive adjusted temperatures at this same cadence.
     pub fn step(&mut self, temperature: f32) -> f32 {
+        const KP: f32 = 0.04;
+        const KI: f32 = 0.0025;
+        const KD: f32 = 0.01;
         let now_seconds = self.start.elapsed().as_secs_f32();
 
         let elapsed = match self.last_call_seconds {
@@ -128,26 +116,29 @@ impl Controller {
         let error = temperature - self.setpoint;
         let duty_range = self.ceiling - self.floor;
 
-        // let reference_error = Self::PROPORTIONAL_REFERENCE_ERROR_CELSIUS;
+        const PROPORTIONAL_REFERENCE_ERROR_CELSIUS: f32 = 2.0;
+        const PROPORTIONAL_POWER: f32 = 1.7564707973660298;
 
-        // let proportional_error = error.signum()
-        //     * reference_error
-        //     * (error.abs() / reference_error).powf(Self::PROPORTIONAL_POWER);
+        let reference_error = PROPORTIONAL_REFERENCE_ERROR_CELSIUS;
 
-        let proportional = duty_range * Self::KP * error;
-        let derivative = duty_range * Self::KD * error_rate;
+        let proportional_error = error.signum()
+            * reference_error
+            * (error.abs() / reference_error).powf(PROPORTIONAL_POWER);
+
+        let proportional = duty_range * KP * proportional_error;
+        let derivative = duty_range * KD * error_rate;
 
         /*
          * Limit the integral contribution to one complete duty range in either
          * direction. Conditional integration below provides the primary
          * anti-windup behavior; this limit is an additional safety bound.
          */
-        let integral_error_limit = 1.0 / Self::KI;
+        let integral_error_limit = 1.0 / KI;
 
         let proposed_integral_error = (self.integral_error + error * elapsed)
             .clamp(-integral_error_limit, integral_error_limit);
 
-        let proposed_integral = duty_range * Self::KI * proposed_integral_error;
+        let proposed_integral = duty_range * KI * proposed_integral_error;
 
         let proposed_duty = self.floor + proportional + proposed_integral + derivative;
 
@@ -164,7 +155,7 @@ impl Controller {
             self.integral_error = proposed_integral_error;
         }
 
-        let integral = duty_range * Self::KI * self.integral_error;
+        let integral = duty_range * KI * self.integral_error;
 
         self.duty =
             (self.floor + proportional + integral + derivative).clamp(self.floor, self.ceiling);
