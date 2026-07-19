@@ -74,9 +74,9 @@ impl Controller {
     // P, I, and D all operate on the same EMA-adjusted temperature, and D is
     // derived from consecutive adjusted temperatures at this same cadence.
     pub fn step(&mut self, temperature: f32) -> f32 {
-        const KP: f32 = 0.04;
+        const KP: f32 = 0.05;
         const KI: f32 = 0.0025;
-        const KD: f32 = 0.01;
+        const KD: f32 = 0.005;
         let now_seconds = self.start.elapsed().as_secs_f32();
 
         let elapsed = match self.last_call_seconds {
@@ -117,7 +117,7 @@ impl Controller {
         let duty_range = self.ceiling - self.floor;
 
         const PROPORTIONAL_REFERENCE_ERROR_CELSIUS: f32 = 2.0;
-        const PROPORTIONAL_POWER: f32 = 1.7564707973660298;
+        const PROPORTIONAL_POWER: f32 = 1.8;
 
         let reference_error = PROPORTIONAL_REFERENCE_ERROR_CELSIUS;
 
