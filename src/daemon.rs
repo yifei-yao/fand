@@ -130,53 +130,35 @@ fn run_sensor_channel(
         if !running.load(Ordering::SeqCst) {
             break;
         }
-
-        match hardware.read_temperature(&sensor) {
-            Ok(temperature) if temperature.is_finite() => {
-                let sensor_error = temperature - setpoint;
-                if sensor_error >= WARNING_THRESHOLD_CELSIUS {
-                    if !warning_active {
-                        eprintln!(
-                            "WARNING: {} temperature {:.1}C is {:.1}C above target {:.1}C",
-                            name, temperature, sensor_error, setpoint
-                        );
-                        warning_active = true;
-                    }
-                } else {
-                    warning_active = false;
-                }
-
-                let Some(adjusted_temperature) = controller.sample_temperature(temperature) else {
-                    continue;
-                };
-
-                samples_since_update += 1;
-                if samples_since_update < FAN_UPDATE_EVERY_SAMPLES {
-                    continue;
-                }
-                samples_since_update = 0;
-
-                // P, I, D, and the physical fan all advance together at the
-                // control rate, using the latest continuously updated EMA.
-                let duty = controller.step(adjusted_temperature);
-                write_duty(&name, &mut hardware, &mut fan, &duty_tx, duty);
+        let raw_temperature = hardware.read_temperature(&sensor).ok();
+        let adjusted_temperature = match controller.sample_temperature(raw_temperature) {
+            Ok(temperature) => temperature,
+            Err(error) => {
+                eprintln!("ERROR: {name}: {error}; disabling channel and releasing fan control");
+                hardware.release_fan(&mut fan);
+                hardware.release_gpus();
+                return Ok(());
             }
-            Ok(temperature) => {
-                // Preserve the fail-safe behavior for an invalid sensor value.
-                // This bypasses the normal C-sample cadence intentionally.
-                eprintln!("{}: invalid sensor value: {temperature}", name);
-                samples_since_update = 0;
-                let duty = controller.ceiling();
-                write_duty(&name, &mut hardware, &mut fan, &duty_tx, duty);
+        };
+        let sensor_error = adjusted_temperature - setpoint;
+        if sensor_error >= WARNING_THRESHOLD_CELSIUS {
+            if !warning_active {
+                eprintln!(
+                    "WARNING: {} temperature {:.1}C is {:.1}C above target {:.1}C",
+                    name, adjusted_temperature, sensor_error, setpoint
+                );
+                warning_active = true;
             }
-            Err(e) => {
-                // A read failure is also an immediate fail-safe condition.
-                eprintln!("{}: sensor read failed: {e}", name);
-                samples_since_update = 0;
-                let duty = controller.ceiling();
-                write_duty(&name, &mut hardware, &mut fan, &duty_tx, duty);
-            }
+        } else {
+            warning_active = false;
         }
+        samples_since_update += 1;
+        if samples_since_update < FAN_UPDATE_EVERY_SAMPLES {
+            continue;
+        }
+        samples_since_update = 0;
+        let duty = controller.step(adjusted_temperature);
+        write_duty(&name, &mut hardware, &mut fan, &duty_tx, duty);
     }
 
     hardware.release_fan(&mut fan);

@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{fmt, time::Instant};
 
 // Fixed internal control timing/filter parameters.
 //
@@ -93,7 +93,10 @@ impl Controller {
     // Called for every raw sensor sample. The existing bad-value/jump guard is
     // applied first, then the accepted temperature feeds the infinite-memory
     // EMA. The returned value is the adjusted temperature used by the PID.
-    pub fn sample_temperature(&mut self, raw_temperature: f32) -> Option<f32> {
+    pub fn sample_temperature(
+        &mut self,
+        raw_temperature: Option<f32>,
+    ) -> Result<f32, InvalidTempError> {
         let now_seconds = self.start.elapsed().as_secs_f32();
         self.temp_filter.filter(raw_temperature, now_seconds)
     }
@@ -193,23 +196,25 @@ impl Controller {
         self.floor
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InvalidTempError;
+
+impl fmt::Display for InvalidTempError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid")
+    }
+}
 
 struct TempFilter {
     last_tmp: Option<f32>,
     suspicious_since: Option<f32>,
+    invalid_since: Option<f32>,
     adjusted_tmp: Option<f32>,
     ema_sample_fraction: f32,
 }
 
 impl TempFilter {
     fn new() -> Self {
-        // Convert the configured per-second EMA response into the exact
-        // per-sample coefficient:
-        //
-        //   alpha = 1 - (1 - P)^(1 / X)
-        //
-        // so X samples at a sustained new value close exactly P of the
-        // remaining gap after one second.
         let ema_sample_fraction = if EMA_RESPONSE_PER_SECOND <= 0.0 {
             0.0
         } else if EMA_RESPONSE_PER_SECOND >= 1.0 {
@@ -221,56 +226,58 @@ impl TempFilter {
         Self {
             last_tmp: None,
             suspicious_since: None,
+            invalid_since: None,
             adjusted_tmp: None,
             ema_sample_fraction,
         }
     }
 
-    fn filter(&mut self, raw_tmp: f32, now_seconds: f32) -> Option<f32> {
-        // A non-finite sample contributes no new information to the EMA.
-        // Keep the last adjusted value if one exists.
-        if !raw_tmp.is_finite() {
-            return self.adjusted_tmp;
-        }
-
-        const JUMP_LIMIT_CELSIUS: f32 = 3.0;
-        const JUMP_HOLD_SECONDS: f32 = 1.0;
-
-        let accepted_tmp = match self.last_tmp {
-            None => {
-                self.last_tmp = Some(raw_tmp);
-                raw_tmp
+    fn filter(&mut self, raw_tmp: Option<f32>, now_seconds: f32) -> Result<f32, InvalidTempError> {
+        const INVALID_HOLD_SECONDS: f32 = 3.0;
+        let raw_tmp = match raw_tmp.filter(|tmp| tmp.is_finite()) {
+            Some(tmp) => {
+                self.invalid_since = None;
+                tmp
             }
-            Some(last_tmp) => {
-                let suspicious_jump = (raw_tmp - last_tmp).abs() >= JUMP_LIMIT_CELSIUS;
-
-                if !suspicious_jump {
-                    self.suspicious_since = None;
-                    self.last_tmp = Some(raw_tmp);
-                    raw_tmp
-                } else {
-                    match self.suspicious_since {
-                        None => {
-                            self.suspicious_since = Some(now_seconds);
-                            last_tmp
-                        }
-                        Some(since) if now_seconds - since < JUMP_HOLD_SECONDS => last_tmp,
-                        Some(_) => {
-                            self.suspicious_since = None;
-                            self.last_tmp = Some(raw_tmp);
-                            raw_tmp
-                        }
-                    }
+            None => {
+                let since = *self.invalid_since.get_or_insert(now_seconds);
+                if now_seconds - since >= INVALID_HOLD_SECONDS {
+                    return Err(InvalidTempError);
                 }
+                self.suspicious_since = None;
+                self.last_tmp.ok_or(InvalidTempError)?
             }
         };
-
+        let accepted_tmp = self.filter_jump(raw_tmp, now_seconds);
         let adjusted_tmp = match self.adjusted_tmp {
             None => accepted_tmp,
             Some(previous) => previous + self.ema_sample_fraction * (accepted_tmp - previous),
         };
-
         self.adjusted_tmp = Some(adjusted_tmp);
-        Some(adjusted_tmp)
+        Ok(adjusted_tmp)
+    }
+
+    fn filter_jump(&mut self, raw_tmp: f32, now_seconds: f32) -> f32 {
+        const JUMP_LIMIT_CELSIUS: f32 = 3.0;
+        const JUMP_HOLD_SECONDS: f32 = 1.0;
+        let Some(last_tmp) = self.last_tmp else {
+            self.last_tmp = Some(raw_tmp);
+            return raw_tmp;
+        };
+        if (raw_tmp - last_tmp).abs() < JUMP_LIMIT_CELSIUS {
+            self.suspicious_since = None;
+            self.last_tmp = Some(raw_tmp);
+            return raw_tmp;
+        }
+        let Some(suspicious_since) = self.suspicious_since else {
+            self.suspicious_since = Some(now_seconds);
+            return last_tmp;
+        };
+        if now_seconds - suspicious_since < JUMP_HOLD_SECONDS {
+            return last_tmp;
+        }
+        self.suspicious_since = None;
+        self.last_tmp = Some(raw_tmp);
+        raw_tmp
     }
 }
