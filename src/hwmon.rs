@@ -8,14 +8,12 @@ pub struct TempEntry {
     pub chip: String,
     pub file: String,
     pub label: String,
-    pub path: PathBuf,
     pub celsius: f32,
 }
 
 pub struct PwmEntry {
     pub chip: String,
     pub file: String,
-    pub path: PathBuf,
     pub current_raw: u32,
     pub has_enable: bool,
 }
@@ -51,7 +49,6 @@ pub fn scan() -> (Vec<TempEntry>, Vec<PwmEntry>) {
                     chip: chip.clone(),
                     file,
                     label,
-                    path: f.path(),
                     celsius: milli / 1000.0,
                 });
             } else if file.starts_with("pwm")
@@ -68,7 +65,6 @@ pub fn scan() -> (Vec<TempEntry>, Vec<PwmEntry>) {
                 pwms.push(PwmEntry {
                     chip: chip.clone(),
                     file,
-                    path: f.path(),
                     current_raw,
                     has_enable,
                 });
