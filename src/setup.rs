@@ -172,8 +172,9 @@ pub fn interactive() -> Result<(), String> {
 
     let config = Config { channels };
 
+    eprintln!("generated config.toml");
     let toml_text = toml::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    print!("--- generated config.toml ---\n{toml_text}");
+    print!("{toml_text}");
     std::io::stdout().flush().map_err(|e| e.to_string())?;
 
     Ok(())
