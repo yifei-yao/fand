@@ -4,10 +4,12 @@ A simple Linux fan controller using hwmon and NVIDIA NVML.
 
 ## Usage
 
+```
 fand setup > config.toml
 fand test
 fand run config.toml
 fand monitor [config.toml]
+```
 
 setup creates a config, test manually tests fans, run controls fans automatically, and monitor shows live status.
 
