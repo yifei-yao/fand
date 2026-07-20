@@ -84,8 +84,7 @@ pub fn resolve(reference: &str) -> Result<PathBuf, String> {
     let (chip, file) = reference
         .split_once('/')
         .ok_or_else(|| format!("bad hwmon reference '{reference}', want chip/file"))?;
-    let entries =
-        fs::read_dir("/sys/class/hwmon").map_err(|e| format!("/sys/class/hwmon: {e}"))?;
+    let entries = fs::read_dir("/sys/class/hwmon").map_err(|e| format!("/sys/class/hwmon: {e}"))?;
     for entry in entries.flatten() {
         let dir = entry.path();
         let name = fs::read_to_string(dir.join("name"))
@@ -123,6 +122,31 @@ impl PwmFan {
         let raw = fs::read_to_string(&self.pwm_path).map_err(|e| e.to_string())?;
         let raw = raw.trim().parse::<f32>().map_err(|e| e.to_string())?;
         Ok(raw / 255.0 * 100.0)
+    }
+
+    pub fn read_rpm(&self) -> Result<Option<u32>, String> {
+        let Some(file) = self.pwm_path.file_name().and_then(|name| name.to_str()) else {
+            return Ok(None);
+        };
+        let Some(index) = file.strip_prefix("pwm") else {
+            return Ok(None);
+        };
+        if index.is_empty() || !index.chars().all(|c| c.is_ascii_digit()) {
+            return Ok(None);
+        }
+
+        let rpm_path = self.pwm_path.with_file_name(format!("fan{index}_input"));
+        if !rpm_path.exists() {
+            return Ok(None);
+        }
+
+        let raw =
+            fs::read_to_string(&rpm_path).map_err(|e| format!("{}: {e}", rpm_path.display()))?;
+        let rpm = raw
+            .trim()
+            .parse::<u32>()
+            .map_err(|e| format!("{}: {e}", rpm_path.display()))?;
+        Ok(Some(rpm))
     }
 
     pub fn engage(&mut self) -> Result<(), String> {

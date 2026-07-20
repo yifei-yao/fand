@@ -3,6 +3,7 @@ pub mod daemon;
 pub mod gpu;
 pub mod hardware;
 pub mod hwmon;
+pub mod manual;
 pub mod monitor;
 pub mod setup;
 

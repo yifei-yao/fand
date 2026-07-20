@@ -81,6 +81,14 @@ impl Hardware {
         }
     }
 
+    pub fn read_fan_rpm(&self, fan: &Fan) -> Result<Option<u32>, String> {
+        match fan {
+            Fan::Hwmon(fan) => fan.read_rpm(),
+            // Current NVML integration exposes fan target duty but not tachometer RPM.
+            Fan::Nvml(_) => Ok(None),
+        }
+    }
+
     pub fn engage_fan(&mut self, fan: &mut Fan) -> Result<(), String> {
         match fan {
             Fan::Hwmon(fan) => fan.engage(),
