@@ -6,7 +6,7 @@ use std::{fmt, time::Instant};
 // P: after one second at a sustained new temperature, the EMA has closed this
 //    fraction of the gap toward that temperature.
 // C: run PID and update the physical fan once every C sensor samples.
-pub const SENSOR_SAMPLE_RATE_HZ: f32 = 10.0;
+pub const SENSOR_SAMPLE_RATE_HZ: f32 = 5.0;
 pub const EMA_RESPONSE_PER_SECOND: f32 = 0.65;
 pub const FAN_UPDATE_EVERY_SAMPLES: usize = 5;
 
@@ -28,33 +28,15 @@ impl Controller {
         assert!(floor.is_finite(), "floor must be finite");
         assert!(ceiling.is_finite(), "ceiling must be finite");
         assert!(floor <= ceiling, "floor must not exceed ceiling");
-        assert!(
-            SENSOR_SAMPLE_RATE_HZ.is_finite() && SENSOR_SAMPLE_RATE_HZ > 0.0,
-            "sensor sample rate must be finite and greater than zero"
-        );
-        assert!(
-            EMA_RESPONSE_PER_SECOND.is_finite()
-                && EMA_RESPONSE_PER_SECOND >= 0.0
-                && EMA_RESPONSE_PER_SECOND <= 1.0,
-            "EMA response per second must be within 0..=1"
-        );
-        assert!(
-            FAN_UPDATE_EVERY_SAMPLES > 0,
-            "fan update scalar must be greater than zero"
-        );
-
         Controller {
             setpoint,
             floor,
             ceiling,
             duty: floor,
-
             integral_error: 0.0,
-
             start: Instant::now(),
             last_call_seconds: None,
             previous_temperature: None,
-
             temp_filter: TempFilter::new(),
         }
     }
