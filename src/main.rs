@@ -81,7 +81,7 @@ fn load_config(path: &str) -> Result<Config, String> {
 fn print_usage() {
     eprintln!("usage: fand setup > config.toml");
     eprintln!("       fand run <config.toml>");
-    eprintln!("       fand monitor [config.toml]");
+    eprintln!("       fand watch [config.toml]");
     eprintln!("       fand test");
 }
 
@@ -91,8 +91,8 @@ fn main() {
     let result = match args.as_slice() {
         [command] if command.as_str() == "setup" => setup::interactive(),
         [command, config_path] if command.as_str() == "run" => daemon::run(config_path),
-        [command] if command.as_str() == "monitor" => monitor::run(DEFAULT_CONFIG_PATH),
-        [command, config_path] if command.as_str() == "monitor" => monitor::run(config_path),
+        [command] if command.as_str() == "watch" => monitor::run(DEFAULT_CONFIG_PATH),
+        [command, config_path] if command.as_str() == "watch" => monitor::run(config_path),
         [command] if command.as_str() == "test" => manual::interactive(),
         _ => {
             print_usage();
